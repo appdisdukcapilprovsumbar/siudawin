@@ -1,0 +1,24 @@
+# 1. Matikan Mesin/Engine PHP
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+
+# 2. Matikan Eksekusi CGI, FastCGI, dan Skrip Lainnya
+Options -ExecCGI -Indexes
+RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .phps .phar .cgi .pl .py
+RemoveType .php .phtml .php3 .php4 .php5 .php7 .phps .phar .cgi .pl .py
+
+# 3. Blokir Akses ke File Skrip/Berbahaya (Meskipun Ekstensi Diubah)
+<FilesMatch "(?i)\.(php|phtml|php3|php4|php5|php7|php8|phps|phar|exe|pl|py|cg|sh|bat|cmd|htaccess|env)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+
+# 4. WHITELIST: Hanya Izinkan Gambar dan Dokumen Standar
+<FilesMatch "(?i)\.(jpg|jpeg|png|gif|webp|pdf)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>

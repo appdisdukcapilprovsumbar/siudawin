@@ -1,0 +1,305 @@
+<?php 
+ namespace App\Controllers\admin;
+  
+ use App\Controllers\BaseController;
+ use CodeIgniter\Controller;
+ use \Hermawan\DataTables\DataTable;
+ use App\Libraries\LogAktifitas;
+ use App\Models\CeraiModel;
+ use App\Models\CeraiPihakModel;
+ use App\Models\KabkotModel;
+ use App\Models\KecamatanModel;
+ use App\Models\KelurahanModel;
+ use PhpOffice\PhpSpreadsheet\Spreadsheet;
+ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+
+class Laporan extends BaseController
+{
+    protected $CeraiModel;
+    protected $log;
+    protected $kabkotModel;
+    protected $kecamatanModel;
+    protected $kelurahanModel;
+
+    public function __construct(){
+        $this->CeraiModel       = new CeraiModel();
+        $this->log              = new LogAktifitas();
+        $this->kabkotModel      = new KabkotModel();
+        $this->kecamatanModel   = new KecamatanModel();
+        $this->kelurahanModel   = new KelurahanModel();
+    }
+
+    public function index(){
+        /*Ket :
+            1 = Semua
+            2 = Tercatat
+            3 = Tidak Tercatat 
+        */
+        $Export     = $this->request->getVar('export');
+        $jenis      = $this->request->getVar('jenis');
+        $kabkotSel  = $this->request->getVar('kabkot');   // kabkot yang dipilih di form
+        $kecSel     = $this->request->getVar('kec');   // kecamatan yang dipilih di form
+        $kelSel     = $this->request->getVar('kel');   // kelurahan yang dipilih di form
+        $awal       = $this->request->getVar('awal');
+        $akhir      = $this->request->getVar('akhir');
+        $rows       = [];
+        $wilayah    = [];
+
+        if (!empty($jenis) && !empty($kabkotSel) && !empty($awal) && !empty($akhir)) {
+            $db      = db_connect();
+            $builder = $db->table('perceraian_pihak')
+                          ->select('
+                              perceraian_pihak.nik,
+                              perceraian_pihak.nama_lengkap,
+                              perceraian_pihak.tempat_lahir,
+                              perceraian_pihak.tanggal_lahir,
+                              perceraian_pihak.jenis_pihak,
+                              perceraian_pihak.agama,
+                              perceraian_pihak.pekerjaan,
+                              perceraian_pihak.alamat,
+                              perceraian.status_perceraian_sebelum_cerai,
+                              perceraian.no_buka_nikah,
+                              perceraian.tgl_buku_nikah,
+                              perceraian.sebab_perceraian,
+                              perceraian.status_cerai_hidup,
+                              perceraian.cerai_mati,
+                              perceraian.no_akta_cerai,
+                              perceraian.tgl_akta_cerai,
+                              perceraian.no_akta_kematian,
+                              perceraian.tgl_akta_kematian,
+                              perceraian.keterangan,
+                              perceraian.kecamatan,
+                              perceraian.kelurahan,
+                              perceraian.created_at
+                          ')
+                          ->join('perceraian', 'perceraian.id = perceraian_pihak.perceraian_id', 'inner')
+                          ->where('perceraian.kabkot', $kabkotSel)
+                          ->where('DATE(perceraian.created_at) >=', $awal)
+                          ->where('DATE(perceraian.created_at) <=', $akhir)
+                          ->orderBy('perceraian.id', 'ASC')
+                          ->orderBy("CASE WHEN perceraian_pihak.jenis_pihak = 'SUAMI' THEN 1 ELSE 2 END", '', false);
+            // Filter kelurahan jika dipilih di form
+            if (!empty($kecSel)) {
+                $builder->where('perceraian.kecamatan', $kecSel);
+            }
+            if (!empty($kelSel)) {
+                $builder->where('perceraian.kelurahan', $kelSel);
+            }
+            // jenis == 1 : Semua
+            // jenis == 2 : Tercatat (ada akta cerai)
+            // jenis == 3 : Tidak Tercatat (tidak ada akta cerai)
+            if ($jenis == 2) {
+                $builder->where('perceraian.no_akta_cerai !=', null);
+            } elseif ($jenis == 3) {
+                $builder->where('perceraian.no_akta_cerai', null);
+            }
+            $rows = $builder->get()->getResultArray();
+            // Data wilayah untuk header laporan
+            $builderWilayah = $this->kabkotModel
+                ->select('ref_kota.kota_nama')
+                ->where('ref_kota.kota_id', $kabkotSel);
+            
+            if (!empty($kecSel)) {
+                $builderWilayah->select('ref_kecamatan.kecamatan_nama')
+                            ->join('ref_kecamatan', 'ref_kecamatan.kota_id = ref_kota.kota_id')
+                            ->where('ref_kecamatan.kecamatan_id', $kecSel);
+            }
+            if (!empty($kelSel)) {
+                $builderWilayah->select('ref_kelurahan.kelurahan_nama')
+                            ->join('ref_kelurahan', 'ref_kelurahan.kecamatan_id = ref_kecamatan.kecamatan_id')
+                            ->where('ref_kelurahan.kelurahan_id', $kelSel);
+            }
+            $wilayah = $builderWilayah->first(); 
+
+        }
+
+        // Daftar kelurahan untuk dropdown (variabel berbeda dari $kecSel)
+        $listKabkot = $this->kabkotModel->where('provinsi_id','13')->findAll();
+
+        $data = [
+            'title'         => 'REKAPAN DATA',
+            'menu_active'   => 'master',
+            'menu_sub'      => 'laporan',
+            'jenis'         => $jenis   ?? '',
+            'awal'          => $awal    ?? '',
+            'akhir'         => $akhir   ?? '',
+            'kabkotSel'     => $kabkotSel  ?? '',
+            'kecSel'        => $kecSel  ?? '',
+            'kelSel'        => $kelSel  ?? '',
+            'data'          => $rows,
+            'total'         => count($rows),
+            'wilayah'       => $wilayah ?? [],
+            'kabkot'        => $listKabkot,
+            'content'       => 'App\Views\laporan\laporan_prov_view',
+        ];
+        return view('App\Views\layout_admin\wrapper', $data);
+    }
+
+    public function export(){
+        $jenis      = $this->request->getVar('jenis');
+        $kabkotSel  = $this->request->getVar('kabkot');
+        $kecSel     = $this->request->getVar('kec');
+        $kelSel     = $this->request->getVar('kel');
+        $awal       = $this->request->getVar('awal');
+        $akhir      = $this->request->getVar('akhir');
+
+        if (empty($jenis) || empty($awal) || empty($akhir)) {
+            return redirect()->to('admin/prov/laporan');
+        }
+
+        $db      = db_connect();
+        $builder = $db->table('perceraian_pihak')
+                      ->select('
+                          perceraian_pihak.nik,
+                          perceraian_pihak.nama_lengkap,
+                          perceraian_pihak.tempat_lahir,
+                          perceraian_pihak.tanggal_lahir,
+                          perceraian_pihak.jenis_pihak,
+                          perceraian_pihak.agama,
+                          perceraian_pihak.pekerjaan,
+                          perceraian_pihak.alamat,
+                          perceraian.status_perceraian_sebelum_cerai,
+                          perceraian.no_buka_nikah,
+                          perceraian.tgl_buku_nikah,
+                          perceraian.sebab_perceraian,
+                          perceraian.status_cerai_hidup,
+                          perceraian.cerai_mati,
+                          perceraian.no_akta_cerai,
+                          perceraian.tgl_akta_cerai,
+                          perceraian.no_akta_kematian,
+                          perceraian.tgl_akta_kematian,
+                          perceraian.keterangan
+                      ')
+                      ->join('perceraian', 'perceraian.id = perceraian_pihak.perceraian_id', 'inner')
+                      ->where('perceraian.kabkot', $kabkotSel)
+                      ->where('DATE(perceraian.created_at) >=', $awal)
+                      ->where('DATE(perceraian.created_at) <=', $akhir)
+                      ->orderBy('perceraian.id', 'ASC')
+                      ->orderBy("CASE WHEN perceraian_pihak.jenis_pihak = 'SUAMI' THEN 1 ELSE 2 END", '', false);
+
+        if (!empty($kecSel)) {
+            $builder->where('perceraian.kecamatan', $kecSel);
+        }
+        
+        if (!empty($kelSel)) {
+            $builder->where('perceraian.kelurahan', $kelSel);
+        }
+
+        if ($jenis == 2) {
+            $builder->where('perceraian.no_akta_cerai !=', null);
+        } elseif ($jenis == 3) {
+            $builder->where('perceraian.no_akta_cerai', null);
+        }
+
+        $rows = $builder->get()->getResultArray();
+
+        // ── Build Excel ──────────────────────────────────────────
+        $spreadsheet = new Spreadsheet();
+        $sheet       = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Data Perceraian');
+
+        $headers = [
+            'A' => 'No',
+            'B' => 'NIK',
+            'C' => 'Nama Lengkap',
+            'D' => 'Tempat Lahir',
+            'E' => 'Tanggal Lahir',
+            'F' => 'Sebagai',
+            'G' => 'Agama',
+            'H' => 'Pekerjaan',
+            'I' => 'Alamat',
+            'J' => 'Status Perkawinan Sebelum Cerai',
+            'K' => 'No Buku Nikah',
+            'L' => 'Tgl Buku Nikah',
+            'M' => 'Sebab Cerai',
+            'N' => 'Status Cerai Hidup/Mati',
+            'O' => 'No Akta Cerai',
+            'P' => 'Tgl Akta Cerai',
+            'Q' => 'No Akta Kematian',
+            'R' => 'Tgl Akta Kematian',
+            'S' => 'Keterangan',
+        ];
+
+        $styleHeader = [
+            'font'      => ['bold' => true],
+            'fill'      => ['fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID, 'startColor' => ['argb' => 'FFD3D3D3']],
+            'alignment' => ['horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER, 'vertical' => \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER, 'wrapText' => true],
+            'borders'   => ['allBorders' => ['borderStyle' => \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN]],
+        ];
+
+        foreach ($headers as $col => $label) {
+            $sheet->setCellValue($col . '1', $label);
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
+        $sheet->getStyle('A1:S1')->applyFromArray($styleHeader);
+        $sheet->getRowDimension(1)->setRowHeight(30);
+
+        $no = 1;
+        foreach ($rows as $row) {
+            $r = $no + 1;
+            $sheet->setCellValue('A'.$r, $no);
+            $sheet->setCellValueExplicit('B'.$r, $row['nik'] ?? '', \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $sheet->setCellValue('C'.$r, $row['nama_lengkap']   ?? '');
+            $sheet->setCellValue('D'.$r, $row['tempat_lahir']   ?? '');
+            $sheet->setCellValue('E'.$r, (!empty($row['tanggal_lahir']) && $row['tanggal_lahir'] != '0000-00-00') ? $row['tanggal_lahir'] : '');
+            $sheet->setCellValue('F'.$r, $row['jenis_pihak']    ?? '');
+            $sheet->setCellValue('G'.$r, $row['agama']          ?? '');
+            $sheet->setCellValue('H'.$r, $row['pekerjaan']      ?? '');
+            $sheet->setCellValue('I'.$r, $row['alamat']         ?? '');
+            $sheet->setCellValue('J'.$r, $row['status_perceraian_sebelum_cerai'] ?? '');
+            $sheet->setCellValue('K'.$r, $row['no_buka_nikah']  ?? '');
+            $sheet->setCellValue('L'.$r, $row['tgl_buku_nikah'] ?? '');
+            $sheet->setCellValue('M'.$r, $row['sebab_perceraian'] ?? '');
+            $sheet->setCellValue('N'.$r, $row['status_cerai_hidup'] ?? '');
+            $sheet->setCellValue('O'.$r, $row['no_akta_cerai']  ?? '');
+            $sheet->setCellValue('P'.$r, $row['tgl_akta_cerai'] ?? '');
+            $sheet->setCellValue('Q'.$r, $row['no_akta_kematian'] ?? '');
+            $sheet->setCellValue('R'.$r, $row['tgl_akta_kematian'] ?? '');
+            $sheet->setCellValue('S'.$r, $row['keterangan']     ?? '');
+            $sheet->getStyle('A'.$r.':S'.$r)->applyFromArray([
+                'borders' => ['allBorders' => ['borderStyle' => \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN]],
+            ]);
+            $no++;
+        }
+
+        $namaFile = 'Laporan_Perceraian_' . $awal . '_sd_' . $akhir . '.xlsx';
+        $writer   = new Xlsx($spreadsheet);
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="' . $namaFile . '"');
+        header('Cache-Control: max-age=0');
+        $writer->save('php://output');
+        exit();
+    }
+
+    public function getKecamatan()
+    {
+        if ($this->request->isAJAX()) {
+            $kode_kabkot = $this->request->getPost('kode_kabkot');
+            $db          = db_connect();
+            $kecamatan   = $db->table('ref_kecamatan')
+                              ->where('kota_id', $kode_kabkot)
+                              ->orderBy('kecamatan_nama', 'ASC')
+                              ->get()->getResult();
+            return $this->response->setJSON($kecamatan);
+        }
+    }
+
+    public function getKelurahan()
+    {
+        if ($this->request->isAJAX()) {
+
+            $kode_kecamatan = $this->request->getPost('kode_kecamatan');
+
+            $db = db_connect();
+
+            $kelurahan = $db->table('ref_kelurahan')
+                            ->where('kecamatan_id', $kode_kecamatan)
+                            ->orderBy('kelurahan_nama','ASC')
+                            ->get()
+                            ->getResult();
+
+            return $this->response->setJSON($kelurahan);
+        }
+    }
+
+}
